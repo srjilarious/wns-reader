@@ -1,0 +1,17 @@
+.{
+    .name = .wns_core,
+    .version = "0.1.0",
+    .fingerprint = 0x65020d7e36034d8e,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // A sibling checkout while gw-yomi has no published URL; see the
+        // README.
+        .gw_yomi = .{ .path = "../../gw-yomi" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "testdata",
+    },
+}

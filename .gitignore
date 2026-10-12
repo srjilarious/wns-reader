@@ -1,0 +1,13 @@
+# Gradle / Android Studio
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+
+# Zig
+native/.zig-cache/
+native/zig-out/
+native/zig-pkg/
