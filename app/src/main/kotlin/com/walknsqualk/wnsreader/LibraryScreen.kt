@@ -51,7 +51,7 @@ fun LibraryScreen(
     onOpenBook: (String) -> Unit,
     onUp: () -> Unit,
     onDictionaries: () -> Unit,
-    onDiagnostics: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         ScreenHeader(
@@ -59,7 +59,7 @@ fun LibraryScreen(
             onBack = if (isRoot) null else onUp,
         ) {
             TextButton(onClick = onDictionaries) { Text("Dictionaries", fontSize = 18.sp) }
-            TextButton(onClick = onDiagnostics) { Text("Diagnostics", fontSize = 18.sp) }
+            TextButton(onClick = onSettings) { Text("Settings", fontSize = 18.sp) }
         }
         AllFilesGate(onRequestAllFiles) {
             Listing(dir, prefs, onOpenFolder, onOpenBook)

@@ -8,11 +8,18 @@ AnkiDroid.
 The UI is Kotlin + Jetpack Compose. Everything else is Zig, built into
 `libwnscore.so` and called over JNI.
 
-**Status: the basic reader.** Browse /sdcard/Manga, read a book (folder
-of images or `.cbz`) right to left with tap zones, swipes and pinch zoom,
-tap an OCR bubble to see its text, tap a word to look it up in an
-installed Yomitan dictionary with gw-read's deinflection and frequency
-ranking. AI questions and Anki cards come next.
+**Status: reading, lookup, AI and Anki cards.** Browse /sdcard/Manga,
+read a book (folder of images or `.cbz`) right to left with tap zones,
+swipes and pinch zoom, tap an OCR bubble to open its panel, then:
+
+- tap a word to look it up in an installed Yomitan dictionary, with
+  gw-read's deinflection and frequency ranking;
+- switch to **AI** to ask the configured provider (Anthropic, OpenAI or
+  Ollama) about the bubble, with its neighbours and the looked-up word;
+- **+ Card** to frame a picture from the page and add an Anki card
+  through AnkiDroid, fields filled the way gw-read fills them.
+
+The panel can be pinned to any edge ("Pin" in the panel, or Settings).
 
 The reading core is [gw-yomi](../gw-yomi), extracted from glyphwire's
 gw-read; this repo is the Android UI and the JNI layer over it.
@@ -28,12 +35,32 @@ gw-read; this repo is the Android UI and the JNI layer over it.
 The app asks for all-files access on first launch so it can read both
 folders by path.
 
+## Settings
+
+Everything gw-read reads from `read.conf.lua` is on Library › Settings:
+
+- **AI**: provider, model and endpoint (blank means gw-read's default for
+  the provider), API key (encrypted with an Android Keystore key), the
+  instructions, whether to include the neighbouring bubbles and the book's
+  name and page, and the answer cache.
+- **Anki**: deck, note type and which piece of the card fills each field
+  (gw-read's `anki_fields`; the defaults match jidoujisho's
+  `jidoujisho Kinomoto`), tags, duplicates, the word-audio URL, and the
+  picture's size and quality. With AnkiDroid installed and access allowed,
+  decks, note types and fields come from AnkiDroid, and a missing note
+  type can be created from there.
+
+**Ollama on the LAN** works over plain HTTP. Android 17+ also asks for
+"nearby devices" (local network) access before an app can reach a LAN
+address; Settings shows an Allow button when the endpoint needs it. The
+Daylight's Android 13 doesn't have that rule.
+
 ## Layout
 
 | Path | What |
 |---|---|
-| `app/` | The Android app (Kotlin, Compose). `app/build.gradle.kts` runs `zig build` per variant and packages the result as a jniLibs directory. |
-| `native/` | The Zig side: `jni.zig` (the JNI surface and logcat glue), `library.zig` (listing the books folder), `book.zig` (an open book and its OCR), `dictionaries.zig` (installing and looking up), `diag.zig` (the diagnostics screen). |
+| `app/` | The Android app (Kotlin, Compose). `app/build.gradle.kts` runs `zig build` per variant and packages the result as a jniLibs directory. HTTP is OkHttp (`Network.kt`); cards go through AnkiDroid's `AddContentApi` (`Anki.kt`, from JitPack). |
+| `native/` | The Zig side: `jni.zig` (the JNI surface and logcat glue), `library.zig` (listing the books folder), `book.zig` (an open book and its OCR), `dictionaries.zig` (installing and looking up), `assistant.zig` (AI requests and the answer cache), `cards.zig` (Anki fields and the picture crop), `diag.zig` (the diagnostics screen). |
 | `native/testdata/` | Fixtures: `probe.cbz` with a mokuro sidecar, a tiny Yomitan term dictionary and frequency list, and the script that makes them. |
 
 ## Requirements

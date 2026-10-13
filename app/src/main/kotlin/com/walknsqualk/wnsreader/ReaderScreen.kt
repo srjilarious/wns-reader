@@ -64,8 +64,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -158,7 +160,8 @@ private fun FullScreen() {
 @Composable
 private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val metrics = LocalContext.current.resources.displayMetrics
+    val context = LocalContext.current
+    val metrics = context.resources.displayMetrics
     val loader = remember(book.id) { PageLoader(book.id, 2 * max(metrics.widthPixels, metrics.heightPixels)) }
     val lastPage = book.pages.size - 1
 
@@ -168,6 +171,17 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
     var selected by remember { mutableStateOf<Int?>(null) }
     var chrome by remember { mutableStateOf(false) }
     var showBoxes by remember { mutableStateOf(prefs.showBubbleBoxes) }
+    var panelSide by remember { mutableStateOf(prefs.panelSide) }
+    // The card being made, over everything else, and the note shown after.
+    var card by remember { mutableStateOf<Pair<JSONObject, Block>?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(3000)
+            notice = null
+        }
+    }
 
     LaunchedEffect(index) {
         prefs.setLastPage(path, index)
@@ -196,19 +210,27 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
     val bubble = selected?.let { shown?.text?.blocks?.getOrNull(it) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val landscape = maxWidth > maxHeight
-        // The panel lies over the page: on the left in landscape, along the
-        // bottom in portrait. The page keeps its size and zoom; it's
-        // panned so the selected bubble sits in the middle of what the
-        // panel leaves uncovered.
-        val panelWidth = maxWidth * 0.42f
-        val panelHeight = maxHeight * 0.45f
+        // The panel lies over the page, pinned to whichever edge the user
+        // picked (the right by default). The page keeps its size and zoom;
+        // it's panned so the selected bubble sits in the middle of what
+        // the panel leaves uncovered.
+        // A share of the screen, but never so little the panel can't
+        // hold its buttons, nor so much it hides the page.
+        val panelWidth = (maxWidth * PANEL_SHARE).coerceAtLeast(minOf(PANEL_MIN_WIDTH, maxWidth * PANEL_MAX_SHARE))
+        val panelHeight = (maxHeight * PANEL_SHARE).coerceAtLeast(minOf(PANEL_MIN_HEIGHT, maxHeight * PANEL_MAX_SHARE))
         val viewW = constraints.maxWidth.toFloat()
         val viewH = constraints.maxHeight.toFloat()
-        val uncovered = when {
-            bubble == null -> null
-            landscape -> Rect(viewW * 0.42f, 0f, viewW, viewH)
-            else -> Rect(0f, 0f, viewW, viewH * 0.55f)
+        val panelW = with(LocalDensity.current) { panelWidth.toPx() }
+        val panelH = with(LocalDensity.current) { panelHeight.toPx() }
+        val uncovered = if (bubble == null) {
+            null
+        } else {
+            when (panelSide) {
+                PanelSide.LEFT -> Rect(panelW, 0f, viewW, viewH)
+                PanelSide.RIGHT -> Rect(0f, 0f, viewW - panelW, viewH)
+                PanelSide.TOP -> Rect(0f, panelH, viewW, viewH)
+                PanelSide.BOTTOM -> Rect(0f, 0f, viewW, viewH - panelH)
+            }
         }
 
         when {
@@ -223,13 +245,9 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                     } else {
                         scope.launch {
                             val hit = withContext(Dispatchers.IO) { NativeCore.bubbleAt(book.id, index, imageX, imageY) }
-                            when {
-                                hit != null -> selected = hit
-                                // With the panel up, a tap off the bubbles
-                                // dismisses it rather than turning the page.
-                                selected != null -> selected = null
-                                else -> tapZone(xFraction)
-                            }
+                            // Off the bubbles, a tap turns the page as
+                            // usual, panel or not.
+                            if (hit != null) selected = hit else tapZone(xFraction)
                         }
                     }
                 },
@@ -243,11 +261,37 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
         if (bubble != null) {
             val text = shown!!.text
             val position = text.order.indexOf(selected!!)
+            fun neighbour(offset: Int): String? = text.order.getOrNull(position + offset)?.let { text.blocks.getOrNull(it)?.text }
             val panel: @Composable (Modifier) -> Unit = { modifier ->
                 BubblePanel(
                     text = bubble.text,
                     position = position,
                     count = text.order.size,
+                    side = panelSide,
+                    aiEnabled = prefs.aiEnabled,
+                    aiLabel = prefs.provider().label,
+                    askAi = { highlight, fresh ->
+                        AiClient.ask(
+                            context,
+                            prefs,
+                            AiQuestion(
+                                dialog = bubble.text,
+                                previous = if (position >= 0) neighbour(-1) else null,
+                                next = if (position >= 0) neighbour(1) else null,
+                                highlight = highlight,
+                                title = book.title,
+                                page = index + 1,
+                            ),
+                            fresh,
+                        )
+                    },
+                    onSideChange = {
+                        panelSide = it
+                        prefs.panelSide = it
+                    },
+                    onAddCard = { request ->
+                        card = CardMaker.noteInput(prefs, request, bubble.text, book.title, index + 1) to bubble
+                    },
                     onPrevious = { if (position > 0) selected = text.order[position - 1] },
                     onNext = { if (position + 1 < text.order.size) selected = text.order[position + 1] },
                     onClose = { selected = null },
@@ -259,13 +303,20 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
             val overlay = Modifier
                 .background(Color.White)
                 .pointerInput(Unit) { awaitEachGesture { do { val event = awaitPointerEvent() } while (event.changes.any { it.pressed }) } }
-            if (landscape) {
-                Row(modifier = overlay.width(panelWidth).fillMaxHeight().align(Alignment.CenterStart)) {
+            when (panelSide) {
+                PanelSide.LEFT -> Row(modifier = overlay.width(panelWidth).fillMaxHeight().align(Alignment.CenterStart)) {
                     panel(Modifier.weight(1f).fillMaxHeight())
                     VerticalDivider(color = Color.Black)
                 }
-            } else {
-                Column(modifier = overlay.height(panelHeight).fillMaxWidth().align(Alignment.BottomCenter)) {
+                PanelSide.RIGHT -> Row(modifier = overlay.width(panelWidth).fillMaxHeight().align(Alignment.CenterEnd)) {
+                    VerticalDivider(color = Color.Black)
+                    panel(Modifier.weight(1f).fillMaxHeight())
+                }
+                PanelSide.TOP -> Column(modifier = overlay.height(panelHeight).fillMaxWidth().align(Alignment.TopCenter)) {
+                    panel(Modifier.weight(1f).fillMaxWidth())
+                    HorizontalDivider(color = Color.Black)
+                }
+                PanelSide.BOTTOM -> Column(modifier = overlay.height(panelHeight).fillMaxWidth().align(Alignment.BottomCenter)) {
                     HorizontalDivider(color = Color.Black)
                     panel(Modifier.weight(1f).fillMaxWidth())
                 }
@@ -286,8 +337,47 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                 onGoTo = ::goTo,
             )
         }
+
+        notice?.let {
+            Text(
+                it,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 24.dp)
+                    .background(Color.Black)
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                color = Color.White,
+                fontSize = 18.sp,
+            )
+        }
+
+        card?.let { (note, cardBubble) ->
+            shown?.let { current ->
+                CardFlow(
+                    prefs = prefs,
+                    bookId = book.id,
+                    page = current,
+                    bubble = cardBubble,
+                    note = note,
+                    onDone = { message ->
+                        card = null
+                        notice = message
+                    },
+                )
+            }
+        }
     }
 }
+
+/**
+ * How much of the screen the bubble panel takes, beside or above/below
+ * the page: [PANEL_SHARE] of it, at least the minimum size, at most
+ * [PANEL_MAX_SHARE].
+ */
+private const val PANEL_SHARE = 0.42f
+private const val PANEL_MAX_SHARE = 0.85f
+private val PANEL_MIN_WIDTH = 360.dp
+private val PANEL_MIN_HEIGHT = 320.dp
 
 /**
  * One page, fitted to the view, with pinch zoom and pan. Gestures are

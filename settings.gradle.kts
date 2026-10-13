@@ -11,6 +11,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // AnkiDroid's AddContentApi is only published there.
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.ankidroid") }
+        }
     }
 }
 

@@ -31,6 +31,8 @@ const diag = @import("diag.zig");
 const library = @import("library.zig");
 const Book = @import("book.zig").Book;
 const dictionaries = @import("dictionaries.zig");
+const assistant = @import("assistant.zig");
+const cards = @import("cards.zig");
 const FrequencyOrder = @import("gw_yomi").dict.FrequencyOrder;
 
 const log_tag = "wnscore";
@@ -45,6 +47,7 @@ const gpa = std.heap.c_allocator;
 var threaded: std.Io.Threaded = undefined;
 var books: BookTable = .{};
 var dicts: dictionaries.Library = undefined;
+var helper: assistant.Assistant = undefined;
 /// The install in progress, if any. One at a time: the screen that
 /// starts one shows nothing else until it ends.
 var install: ?*dictionaries.Install = null;
@@ -65,6 +68,7 @@ export fn JNI_OnLoad(vm: ?*c.JavaVM, reserved: ?*anyopaque) c.jint {
     _ = reserved;
     threaded = .init(gpa, .{});
     dicts = .{ .alloc = gpa, .io = io() };
+    helper = .{ .alloc = gpa, .io = io() };
     std.log.info("libwnscore {s} loaded", .{diag.version});
     return c.JNI_VERSION_1_6;
 }
@@ -256,6 +260,116 @@ fn installProgress(env: *c.JNIEnv, current: *dictionaries.Install) c.jbyteArray 
     defer out.deinit();
     current.writeProgress(&out.writer) catch |err| return errorJson(env, err);
     return newByteArray(env, out.written());
+}
+
+// ---- settings, AI and cards ------------------------------------------------
+
+/// `defaults(): ByteArray` -- see `cards.writeDefaults`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_defaults(env: *c.JNIEnv, _: c.jclass) c.jbyteArray {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    cards.writeDefaults(&out.writer) catch |err| return errorJson(env, err);
+    return newByteArray(env, out.written());
+}
+
+/// `openAiCache(path: ByteArray): ByteArray` -- `{}` or an error.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_openAiCache(env: *c.JNIEnv, _: c.jclass, path_array: c.jbyteArray) c.jbyteArray {
+    const path = readByteArray(env, path_array) catch |err| return errorJson(env, err);
+    defer gpa.free(path);
+    helper.openCache(path) catch |err| return errorJson(env, err);
+    return newByteArray(env, "{}");
+}
+
+/// `aiPrepare(question: ByteArray): ByteArray` -- see `Assistant.writePrepare`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_aiPrepare(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(assistant.Question, env, json_array, struct {
+        fn call(q: assistant.Question, w: *std.Io.Writer) !void {
+            try helper.writePrepare(gpa, q, w);
+        }
+    }.call);
+}
+
+/// `aiFinish(reply: ByteArray): ByteArray` -- see `Assistant.writeFinish`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_aiFinish(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(assistant.Reply, env, json_array, struct {
+        fn call(r: assistant.Reply, w: *std.Io.Writer) !void {
+            try helper.writeFinish(gpa, r, w);
+        }
+    }.call);
+}
+
+/// `cardFields(note: ByteArray): ByteArray` -- see `cards.writeFields`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_cardFields(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(cards.NoteInput, env, json_array, struct {
+        fn call(in: cards.NoteInput, w: *std.Io.Writer) !void {
+            try cards.writeFields(gpa, in, w);
+        }
+    }.call);
+}
+
+/// `cropInitial(bubble: IntArray, pageW: Int, pageH: Int): IntArray` --
+/// boxes are `[x, y, w, h]` in page-image pixels.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_cropInitial(env: *c.JNIEnv, _: c.jclass, bubble: c.jintArray, page_w: c.jint, page_h: c.jint) c.jintArray {
+    const box = readBox(env, bubble) orelse return null;
+    return newBox(env, cards.initialBox(box, page_w, page_h));
+}
+
+/// `cropHandle(box: IntArray, x: Int, y: Int, tolerance: Int): Int` --
+/// what a drag from (x, y) grabs, as a `crop.Handle` ordinal.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_cropHandle(env: *c.JNIEnv, _: c.jclass, box_array: c.jintArray, x: c.jint, y: c.jint, tolerance: c.jint) c.jint {
+    const box = readBox(env, box_array) orelse return 0;
+    return @intFromEnum(cards.handleAt(box, x, y, tolerance));
+}
+
+/// `cropDrag(start: IntArray, handle: Int, dx: Int, dy: Int, pageW: Int, pageH: Int): IntArray`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_cropDrag(env: *c.JNIEnv, _: c.jclass, start_array: c.jintArray, handle: c.jint, dx: c.jint, dy: c.jint, page_w: c.jint, page_h: c.jint) c.jintArray {
+    const start = readBox(env, start_array) orelse return null;
+    const h = std.enums.fromInt(@import("gw_yomi").crop.Handle, handle) orelse .move;
+    return newBox(env, cards.dragBox(start, h, dx, dy, page_w, page_h));
+}
+
+/// `cropEncode(book: Int, index: Int, box: IntArray, maxW: Int, maxH: Int, quality: Int): ByteArray?`
+/// -- the box cut out of the page, downscaled and JPEG-encoded.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_cropEncode(env: *c.JNIEnv, _: c.jclass, id: c.jint, index: c.jint, box_array: c.jintArray, max_w: c.jint, max_h: c.jint, quality: c.jint) c.jbyteArray {
+    const box = readBox(env, box_array) orelse return null;
+    const book = books.acquire(id) orelse return null;
+    defer books.release(id);
+    const page = book.readPage(gpa, @intCast(@max(index, 0))) catch return null;
+    defer gpa.free(page);
+    const encoded = cards.encode(gpa, page, box, @intCast(@max(max_w, 0)), @intCast(@max(max_h, 0)), @intCast(std.math.clamp(quality, 1, 100))) catch |err| {
+        std.log.warn("crop: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer gpa.free(encoded.jpeg);
+    return newByteArray(env, encoded.jpeg);
+}
+
+/// Parses `json_array` as a `T` and hands it to `call`, which writes the
+/// JSON reply. Unknown fields are ignored so Kotlin can send a superset.
+fn jsonCall(comptime T: type, env: *c.JNIEnv, json_array: c.jbyteArray, comptime call: fn (T, *std.Io.Writer) anyerror!void) c.jbyteArray {
+    const json = readByteArray(env, json_array) catch |err| return errorJson(env, err);
+    defer gpa.free(json);
+    const parsed = std.json.parseFromSlice(T, gpa, json, .{ .ignore_unknown_fields = true }) catch |err| return errorJson(env, err);
+    defer parsed.deinit();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    call(parsed.value, &out.writer) catch |err| return errorJson(env, err);
+    return newByteArray(env, out.written());
+}
+
+fn readBox(env: *c.JNIEnv, array: c.jintArray) ?cards.Rect {
+    if (array == null or env.*.*.GetArrayLength.?(env, array) != 4) return null;
+    var v: [4]c.jint = undefined;
+    env.*.*.GetIntArrayRegion.?(env, array, 0, 4, &v);
+    return .{ .x = v[0], .y = v[1], .w = v[2], .h = v[3] };
+}
+
+fn newBox(env: *c.JNIEnv, box: cards.Rect) c.jintArray {
+    const array = env.*.*.NewIntArray.?(env, 4);
+    if (array == null) return null;
+    const v = [4]c.jint{ @intCast(box.x), @intCast(box.y), @intCast(box.w), @intCast(box.h) };
+    env.*.*.SetIntArrayRegion.?(env, array, 0, 4, &v);
+    return array;
 }
 
 // ---- book handles --------------------------------------------------------------

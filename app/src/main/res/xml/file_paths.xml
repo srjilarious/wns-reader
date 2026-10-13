@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Media for the card being added, shared with AnkiDroid. -->
+    <cache-path name="anki" path="anki/" />
+</paths>

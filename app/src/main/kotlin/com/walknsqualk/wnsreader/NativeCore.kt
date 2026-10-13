@@ -35,6 +35,15 @@ object NativeCore {
     @JvmStatic private external fun installBegin(zip: ByteArray, root: ByteArray): ByteArray
     @JvmStatic private external fun installStep(): ByteArray
     @JvmStatic private external fun installCancel()
+    @JvmStatic private external fun defaults(): ByteArray
+    @JvmStatic private external fun openAiCache(path: ByteArray): ByteArray
+    @JvmStatic private external fun aiPrepare(question: ByteArray): ByteArray
+    @JvmStatic private external fun aiFinish(reply: ByteArray): ByteArray
+    @JvmStatic private external fun cardFields(note: ByteArray): ByteArray
+    @JvmStatic private external fun cropInitial(bubble: IntArray, pageW: Int, pageH: Int): IntArray?
+    @JvmStatic private external fun cropHandle(box: IntArray, x: Int, y: Int, tolerance: Int): Int
+    @JvmStatic private external fun cropDrag(start: IntArray, handle: Int, dx: Int, dy: Int, pageW: Int, pageH: Int): IntArray?
+    @JvmStatic private external fun cropEncode(book: Int, index: Int, box: IntArray, maxW: Int, maxH: Int, quality: Int): ByteArray?
 
     private fun String.utf8() = toByteArray(Charsets.UTF_8)
 
@@ -72,4 +81,36 @@ object NativeCore {
     fun stepInstall(): InstallProgress = InstallProgress.from(installStep().json())
 
     fun cancelInstall() = installCancel()
+
+    /** gw-read's Anki and AI defaults and the AI providers; see native/src/cards.zig. */
+    fun defaultSettings(): JSONObject = defaults().json().orThrow()
+
+    fun openAnswerCache(path: String) {
+        openAiCache(path.utf8()).json().orThrow()
+    }
+
+    /** See native/src/assistant.zig `writePrepare`. */
+    fun prepareQuestion(question: JSONObject): JSONObject = aiPrepare(question.toString().utf8()).json().orThrow()
+
+    /** See native/src/assistant.zig `writeFinish`. */
+    fun finishQuestion(reply: JSONObject): JSONObject = aiFinish(reply.toString().utf8()).json().orThrow()
+
+    /** See native/src/cards.zig `writeFields`. */
+    fun renderCard(note: JSONObject): JSONObject = cardFields(note.toString().utf8()).json().orThrow()
+
+    // Crop boxes are [x, y, w, h] in page-image pixels (native/src/cards.zig).
+
+    fun initialCrop(bubble: Block, pageW: Int, pageH: Int): IntArray =
+        cropInitial(intArrayOf(bubble.x1, bubble.y1, bubble.x2 - bubble.x1, bubble.y2 - bubble.y1), pageW, pageH)
+            ?: intArrayOf(0, 0, pageW, pageH)
+
+    /** What a drag from (x, y) grabs: an opaque handle for [dragCrop]. */
+    fun cropHandleAt(box: IntArray, x: Int, y: Int, tolerance: Int): Int = cropHandle(box, x, y, tolerance)
+
+    fun dragCrop(start: IntArray, handle: Int, dx: Int, dy: Int, pageW: Int, pageH: Int): IntArray =
+        cropDrag(start, handle, dx, dy, pageW, pageH) ?: start
+
+    /** The box cut out of the page as a JPEG, or null if it can't be. */
+    fun encodeCrop(book: Int, index: Int, box: IntArray, maxW: Int, maxH: Int, quality: Int): ByteArray? =
+        cropEncode(book, index, box, maxW, maxH, quality)
 }

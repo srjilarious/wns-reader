@@ -29,6 +29,7 @@ sealed interface Screen {
     data class Library(val dir: String) : Screen
     data class Reader(val path: String) : Screen
     data object Dictionaries : Screen
+    data object Settings : Screen
     data object Diagnostics : Screen
 }
 
@@ -42,8 +43,10 @@ class MainActivity : ComponentActivity() {
         // Open the installed dictionaries once, up front; the reader looks
         // words up through whatever is open.
         val dictionaryRoot = Paths.installedDictionaries(this).absolutePath
+        val answerCache = Paths.answerCache(this).absolutePath
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { NativeCore.openDictionaries(dictionaryRoot, prefs.frequencyOrder) }
+            runCatching { NativeCore.openAnswerCache(answerCache) }
         }
 
         setContent {
@@ -85,10 +88,11 @@ private fun App(prefs: Prefs, onRequestAllFiles: () -> Unit) {
             onOpenBook = { push(Screen.Reader(it)) },
             onUp = { pop() },
             onDictionaries = { push(Screen.Dictionaries) },
-            onDiagnostics = { push(Screen.Diagnostics) },
+            onSettings = { push(Screen.Settings) },
         )
         is Screen.Reader -> ReaderScreen(path = screen.path, prefs = prefs, onBack = { pop() })
         Screen.Dictionaries -> DictionariesScreen(prefs = prefs, onBack = { pop() })
+        Screen.Settings -> SettingsScreen(prefs = prefs, onBack = { pop() }, onDiagnostics = { push(Screen.Diagnostics) })
         Screen.Diagnostics -> DiagnosticsScreen(onBack = { pop() })
     }
 }

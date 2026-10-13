@@ -8,8 +8,28 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- AI questions and the word audio for Anki cards. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android 17+ only lets an app reach the local network (an Ollama
+         server on the LAN) with this, granted at runtime. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <!-- Adding notes through AnkiDroid's AddContentApi; asked for at
+         runtime, the first time a card is added. -->
+    <uses-permission android:name="com.ichi2.anki.permission.READ_WRITE_DATABASE" />
+
+    <!-- Android 11+ hides other apps unless asked: AnkiDroid's package and
+         its content provider have to be visible to use its API. -->
+    <queries>
+        <package android:name="com.ichi2.anki" />
+    </queries>
+
+    <!-- Plain HTTP is allowed for Ollama, which usually runs on a machine
+         on the local network without TLS. -->
     <application
         android:label="@string/app_name"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <!-- Rotation and resizing are handled by Compose's layout, not by
@@ -23,5 +43,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Card images and audio are handed to AnkiDroid as content URIs
+             into the cache's anki/ folder. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
