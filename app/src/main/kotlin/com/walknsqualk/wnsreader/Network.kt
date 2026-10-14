@@ -38,15 +38,25 @@ object Network {
         .build()
 
     /** The status and body of [request]. Cancelling the coroutine cancels the call. */
-    suspend fun fetch(request: Request): Pair<Int, ByteArray> {
-        val call = client.newCall(request)
-        val response = call.await()
-        return response.use { it.code to it.body.bytes() }
-    }
+    suspend fun fetch(request: Request): Pair<Int, ByteArray> = client.newCall(request).await()
 
-    private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+    /**
+     * The body is read here, on OkHttp's own thread. Read after resuming,
+     * it would be read on the caller's thread -- the main thread, for the
+     * card screen -- and a body not already buffered then trips Android's
+     * no-network-on-the-main-thread rule and kills the app.
+     */
+    private suspend fun Call.await(): Pair<Int, ByteArray> = suspendCancellableCoroutine { cont ->
         enqueue(object : Callback {
-            override fun onResponse(call: Call, response: Response) = cont.resume(response)
+            override fun onResponse(call: Call, response: Response) {
+                val result = try {
+                    response.use { it.code to it.body.bytes() }
+                } catch (e: IOException) {
+                    cont.resumeWithException(e)
+                    return
+                }
+                cont.resume(result)
+            }
 
             override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
         })

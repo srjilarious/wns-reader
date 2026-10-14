@@ -37,6 +37,12 @@ object Paths {
 
     /** gw-yomi's AI answer cache. */
     fun answerCache(context: Context): File = File(context.filesDir, "ai-cache.sqlite3")
+
+    /** The app's own database: bookmarks. */
+    fun appDatabase(context: Context): File = File(context.filesDir, "wns-reader.sqlite3")
+
+    /** Where an uncaught crash's stack trace is written ([CrashLog]). */
+    val crashLog: File get() = File(shared, "wns-reader/last-crash.txt")
 }
 
 /** Which edge of the screen the bubble panel is pinned to. */

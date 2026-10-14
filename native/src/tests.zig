@@ -9,6 +9,7 @@ const diag = @import("diag.zig");
 const library = @import("library.zig");
 const Book = @import("book.zig").Book;
 const dictionaries = @import("dictionaries.zig");
+const bookmarks = @import("bookmarks.zig");
 
 const probe_cbz = @embedFile("probe_cbz");
 const mini_dict_zip = @embedFile("mini_dict_zip");
@@ -395,4 +396,67 @@ test "defaults name gw-read's note type and the HTTP providers" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"model\":\"jidoujisho Kinomoto\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"id\":\"anthropic\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "claude_code") == null);
+}
+
+test "bookmarks are kept per book file name, one per bubble" {
+    const alloc = std.testing.allocator;
+    var scratch: Scratch = .{ .tmp = undefined };
+    try scratch.init();
+    defer scratch.tmp.cleanup();
+    const db_path = try scratch.join(alloc, "wns-reader.sqlite3");
+    defer alloc.free(db_path);
+
+    var store: bookmarks.Store = .{ .alloc = alloc, .io = std.testing.io };
+    try store.open(db_path);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try store.writeSave(.{ .book = "/sdcard/Manga/A/Vol1.cbz", .page = 4, .block = 2, .text = "お腹がすいた" }, &out.writer);
+    const Saved = struct { id: i64 };
+    const first = try std.json.parseFromSlice(Saved, alloc, out.written(), .{});
+    defer first.deinit();
+
+    // The same bubble again: its word is updated, not a second bookmark.
+    out.clearRetainingCapacity();
+    try store.writeSave(.{ .book = "/sdcard/Manga/A/Vol1.cbz", .page = 4, .block = 2, .text = "お腹がすいた", .word = "空く", .word_start = 3 }, &out.writer);
+    const again = try std.json.parseFromSlice(Saved, alloc, out.written(), .{});
+    defer again.deinit();
+    try std.testing.expectEqual(first.value.id, again.value.id);
+
+    out.clearRetainingCapacity();
+    try store.writeSave(.{ .book = "/sdcard/Manga/A/Vol1.cbz", .page = 1, .block = 0, .text = "𠮷野家" }, &out.writer);
+    out.clearRetainingCapacity();
+    try store.writeSave(.{ .book = "/sdcard/Manga/A/Vol2.cbz", .page = 0, .block = 0, .text = "x" }, &out.writer);
+
+    // Closed and reopened, and the book moved to another folder.
+    store.close();
+    try store.open(db_path);
+    defer store.close();
+    out.clearRetainingCapacity();
+    try store.writeList(.{ .book = "/sdcard/Manga/Moved/Vol1.cbz" }, &out.writer);
+    const List = struct { bookmarks: []const struct { id: i64, page: i64, block: i64, text: []const u8, word: []const u8, word_start: i64 } };
+    const list = try std.json.parseFromSlice(List, alloc, out.written(), .{});
+    defer list.deinit();
+    const marks = list.value.bookmarks;
+    try std.testing.expectEqual(2, marks.len);
+    try std.testing.expectEqual(1, marks[0].page);
+    try std.testing.expectEqualStrings("𠮷野家", marks[0].text);
+    try std.testing.expectEqual(4, marks[1].page);
+    try std.testing.expectEqualStrings("空く", marks[1].word);
+    try std.testing.expectEqual(3, marks[1].word_start);
+
+    out.clearRetainingCapacity();
+    try store.writeDelete(.{ .id = marks[1].id }, &out.writer);
+    out.clearRetainingCapacity();
+    try store.writeList(.{ .book = "Vol1.cbz" }, &out.writer);
+    const after = try std.json.parseFromSlice(List, alloc, out.written(), .{});
+    defer after.deinit();
+    try std.testing.expectEqual(1, after.value.bookmarks.len);
+}
+
+test "bookmarks without an open database say so" {
+    var store: bookmarks.Store = .{ .alloc = std.testing.allocator, .io = std.testing.io };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.NoDatabase, store.writeList(.{ .book = "x.cbz" }, &out.writer));
 }

@@ -33,6 +33,7 @@ const Book = @import("book.zig").Book;
 const dictionaries = @import("dictionaries.zig");
 const assistant = @import("assistant.zig");
 const cards = @import("cards.zig");
+const bookmarks = @import("bookmarks.zig");
 const FrequencyOrder = @import("gw_yomi").dict.FrequencyOrder;
 
 const log_tag = "wnscore";
@@ -48,6 +49,7 @@ var threaded: std.Io.Threaded = undefined;
 var books: BookTable = .{};
 var dicts: dictionaries.Library = undefined;
 var helper: assistant.Assistant = undefined;
+var marks: bookmarks.Store = undefined;
 /// The install in progress, if any. One at a time: the screen that
 /// starts one shows nothing else until it ends.
 var install: ?*dictionaries.Install = null;
@@ -69,6 +71,7 @@ export fn JNI_OnLoad(vm: ?*c.JavaVM, reserved: ?*anyopaque) c.jint {
     threaded = .init(gpa, .{});
     dicts = .{ .alloc = gpa, .io = io() };
     helper = .{ .alloc = gpa, .io = io() };
+    marks = .{ .alloc = gpa, .io = io() };
     std.log.info("libwnscore {s} loaded", .{diag.version});
     return c.JNI_VERSION_1_6;
 }
@@ -235,6 +238,8 @@ export fn Java_com_walknsqualk_wnsreader_NativeCore_installStep(env: *c.JNIEnv, 
     defer install_mutex.unlock(io());
     const current = install orelse return errorJson(env, error.NoInstallRunning);
     current.step() catch |err| {
+        // Logged before the cleanup, in case the cleanup is what fails.
+        std.log.err("install step failed: {s}", .{@errorName(err)});
         current.deinit();
         install = null;
         return errorJson(env, err);
@@ -262,7 +267,7 @@ fn installProgress(env: *c.JNIEnv, current: *dictionaries.Install) c.jbyteArray 
     return newByteArray(env, out.written());
 }
 
-// ---- settings, AI and cards ------------------------------------------------
+// ---- settings and AI --------------------------------------------------------
 
 /// `defaults(): ByteArray` -- see `cards.writeDefaults`.
 export fn Java_com_walknsqualk_wnsreader_NativeCore_defaults(env: *c.JNIEnv, _: c.jclass) c.jbyteArray {
@@ -297,6 +302,45 @@ export fn Java_com_walknsqualk_wnsreader_NativeCore_aiFinish(env: *c.JNIEnv, _: 
         }
     }.call);
 }
+
+// ---- bookmarks ---------------------------------------------------------------
+
+/// `openAppDatabase(path: ByteArray): ByteArray` -- `{}` or an error.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_openAppDatabase(env: *c.JNIEnv, _: c.jclass, path_array: c.jbyteArray) c.jbyteArray {
+    const path = readByteArray(env, path_array) catch |err| return errorJson(env, err);
+    defer gpa.free(path);
+    marks.open(path) catch |err| return errorJson(env, err);
+    return newByteArray(env, "{}");
+}
+
+/// `listBookmarks(query: ByteArray): ByteArray` -- see `Store.writeList`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_listBookmarks(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(bookmarks.ListQuery, env, json_array, struct {
+        fn call(q: bookmarks.ListQuery, w: *std.Io.Writer) !void {
+            try marks.writeList(q, w);
+        }
+    }.call);
+}
+
+/// `saveBookmark(mark: ByteArray): ByteArray` -- see `Store.writeSave`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_saveBookmark(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(bookmarks.Save, env, json_array, struct {
+        fn call(b: bookmarks.Save, w: *std.Io.Writer) !void {
+            try marks.writeSave(b, w);
+        }
+    }.call);
+}
+
+/// `deleteBookmark(which: ByteArray): ByteArray` -- see `Store.writeDelete`.
+export fn Java_com_walknsqualk_wnsreader_NativeCore_deleteBookmark(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {
+    return jsonCall(bookmarks.Delete, env, json_array, struct {
+        fn call(d: bookmarks.Delete, w: *std.Io.Writer) !void {
+            try marks.writeDelete(d, w);
+        }
+    }.call);
+}
+
+// ---- cards --------------------------------------------------------------------
 
 /// `cardFields(note: ByteArray): ByteArray` -- see `cards.writeFields`.
 export fn Java_com_walknsqualk_wnsreader_NativeCore_cardFields(env: *c.JNIEnv, _: c.jclass, json_array: c.jbyteArray) c.jbyteArray {

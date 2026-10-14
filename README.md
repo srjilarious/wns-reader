@@ -20,6 +20,14 @@ swipes and pinch zoom, tap an OCR bubble to open its panel, then:
   through AnkiDroid, fields filled the way gw-read fills them.
 
 The panel can be pinned to any edge ("Pin" in the panel, or Settings).
+With the panel up, a tap off the bubbles closes it rather than turning
+the page.
+
+**Bookmarks**: "☆ Mark" in the panel bookmarks the bubble along with the
+word looked up in it; the reader's top bar (tap the middle of the page)
+lists the book's bookmarks, and tapping one opens that bubble with the
+word looked up again. They're kept by the book's file name, so moving a
+book to another folder keeps them.
 
 The reading core is [gw-yomi](../gw-yomi), extracted from glyphwire's
 gw-read; this repo is the Android UI and the JNI layer over it.
@@ -31,6 +39,8 @@ gw-read; this repo is the Android UI and the JNI layer over it.
 | Books | `/sdcard/Manga/`, nested however you like. A folder of page images is a book; put its `.mokuro` beside it (`Vol1/` and `Vol1.mokuro`, mokuro's own layout). A `.cbz` can carry its `.mokuro` inside or beside it. |
 | Dictionary zips | `/sdcard/wns-reader/dictionaries/`. Yomitan format, as downloaded: a term dictionary such as [Jitendex](https://jitendex.org) and optionally a frequency list such as JPDB's. Install each from Library › Dictionaries. |
 | Installed dictionaries | App storage. Installing unpacks the zip, indexes it into SQLite and keeps only the index; the zip can be deleted afterwards. |
+| Bookmarks | App storage, `wns-reader.sqlite3`. |
+| Crash log | `/sdcard/wns-reader/last-crash.txt`: the stack trace of the last uncaught exception. A panic in the Zig core only shows in `adb logcat -s wnscore`. |
 
 The app asks for all-files access on first launch so it can read both
 folders by path.
@@ -60,7 +70,7 @@ Daylight's Android 13 doesn't have that rule.
 | Path | What |
 |---|---|
 | `app/` | The Android app (Kotlin, Compose). `app/build.gradle.kts` runs `zig build` per variant and packages the result as a jniLibs directory. HTTP is OkHttp (`Network.kt`); cards go through AnkiDroid's `AddContentApi` (`Anki.kt`, from JitPack). |
-| `native/` | The Zig side: `jni.zig` (the JNI surface and logcat glue), `library.zig` (listing the books folder), `book.zig` (an open book and its OCR), `dictionaries.zig` (installing and looking up), `assistant.zig` (AI requests and the answer cache), `cards.zig` (Anki fields and the picture crop), `diag.zig` (the diagnostics screen). |
+| `native/` | The Zig side: `jni.zig` (the JNI surface and logcat glue), `library.zig` (listing the books folder), `book.zig` (an open book and its OCR), `dictionaries.zig` (installing and looking up), `assistant.zig` (AI requests and the answer cache), `cards.zig` (Anki fields and the picture crop), `bookmarks.zig` (bookmarks in the app database), `diag.zig` (the diagnostics screen). |
 | `native/testdata/` | Fixtures: `probe.cbz` with a mokuro sidecar, a tiny Yomitan term dictionary and frequency list, and the script that makes them. |
 
 ## Requirements

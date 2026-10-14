@@ -40,6 +40,10 @@ object NativeCore {
     @JvmStatic private external fun aiPrepare(question: ByteArray): ByteArray
     @JvmStatic private external fun aiFinish(reply: ByteArray): ByteArray
     @JvmStatic private external fun cardFields(note: ByteArray): ByteArray
+    @JvmStatic private external fun openAppDatabase(path: ByteArray): ByteArray
+    @JvmStatic private external fun listBookmarks(query: ByteArray): ByteArray
+    @JvmStatic private external fun saveBookmark(mark: ByteArray): ByteArray
+    @JvmStatic private external fun deleteBookmark(which: ByteArray): ByteArray
     @JvmStatic private external fun cropInitial(bubble: IntArray, pageW: Int, pageH: Int): IntArray?
     @JvmStatic private external fun cropHandle(box: IntArray, x: Int, y: Int, tolerance: Int): Int
     @JvmStatic private external fun cropDrag(start: IntArray, handle: Int, dx: Int, dy: Int, pageW: Int, pageH: Int): IntArray?
@@ -97,6 +101,30 @@ object NativeCore {
 
     /** See native/src/cards.zig `writeFields`. */
     fun renderCard(note: JSONObject): JSONObject = cardFields(note.toString().utf8()).json().orThrow()
+
+    fun openDatabase(path: String) {
+        openAppDatabase(path.utf8()).json().orThrow()
+    }
+
+    /** [bookPath]'s bookmarks, in page order. They're stored by the book's file name (native/src/bookmarks.zig). */
+    fun bookmarks(bookPath: String): List<Bookmark> =
+        Bookmark.listFrom(listBookmarks(JSONObject().put("book", bookPath).toString().utf8()).json())
+
+    /** Bookmarks bubble [block] of page [page], or updates its word if it has one already. */
+    fun saveBookmark(bookPath: String, page: Int, block: Int, text: String, word: String, wordStart: Int) {
+        val mark = JSONObject()
+            .put("book", bookPath)
+            .put("page", page)
+            .put("block", block)
+            .put("text", text)
+            .put("word", word)
+            .put("word_start", wordStart)
+        saveBookmark(mark.toString().utf8()).json().orThrow()
+    }
+
+    fun deleteBookmark(id: Long) {
+        deleteBookmark(JSONObject().put("id", id).toString().utf8()).json().orThrow()
+    }
 
     // Crop boxes are [x, y, w, h] in page-image pixels (native/src/cards.zig).
 

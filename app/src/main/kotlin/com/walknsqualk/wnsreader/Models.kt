@@ -86,6 +86,43 @@ data class PageText(val width: Int, val height: Int, val blocks: List<Block>, va
     }
 }
 
+/**
+ * A bookmarked bubble: [block] of page [page] (both 0-based), its text,
+ * and the word looked up in it -- [word] empty if none, else the lookup
+ * began at codepoint [wordStart] of [text].
+ */
+data class Bookmark(val id: Long, val page: Int, val block: Int, val text: String, val word: String, val wordStart: Int) {
+    /**
+     * The bubble on [pageText] this bookmark points at: the one at its
+     * index if the text still matches, else the first with its text (the
+     * `.mokuro` may have been regenerated), else whatever is at its index.
+     */
+    fun blockIn(pageText: PageText): Int? {
+        val blocks = pageText.blocks
+        if (blocks.getOrNull(block)?.text == text) return block
+        val moved = blocks.indexOfFirst { it.text == text }
+        if (moved >= 0) return moved
+        return block.takeIf { it in blocks.indices }
+    }
+
+    companion object {
+        fun listFrom(json: JSONObject): List<Bookmark> {
+            val marks = json.orThrow().getJSONArray("bookmarks")
+            return marks.map { i ->
+                val m = marks.getJSONObject(i)
+                Bookmark(
+                    id = m.getLong("id"),
+                    page = m.getInt("page"),
+                    block = m.getInt("block"),
+                    text = m.getString("text"),
+                    word = m.getString("word"),
+                    wordStart = m.getInt("word_start"),
+                )
+            }
+        }
+    }
+}
+
 data class Tag(val label: String, val category: String)
 
 data class Sense(val text: String, val tags: List<Tag>)

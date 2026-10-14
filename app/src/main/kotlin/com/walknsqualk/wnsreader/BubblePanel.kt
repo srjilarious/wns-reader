@@ -25,6 +25,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -67,7 +68,9 @@ private sealed interface AiState {
  * view asks about the whole bubble, with the focused word as the
  * highlight, once per bubble (gw-yomi's cache answers repeats). Card
  * makes an Anki card from the focused word, or from the whole bubble
- * when only the AI answer is up.
+ * when only the AI answer is up. Mark bookmarks the bubble with the
+ * focused word; opened from a bookmark ([restore]), the panel looks that
+ * word up again.
  */
 @Composable
 fun BubblePanel(
@@ -77,9 +80,12 @@ fun BubblePanel(
     side: PanelSide,
     aiEnabled: Boolean,
     aiLabel: String,
+    bookmarked: Boolean,
+    restore: Bookmark?,
     askAi: suspend (highlight: String?, fresh: Boolean) -> AiOutcome,
     onSideChange: (PanelSide) -> Unit,
     onAddCard: (CardRequest) -> Unit,
+    onToggleBookmark: (word: String?, wordStart: Int) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onClose: () -> Unit,
@@ -93,11 +99,20 @@ fun BubblePanel(
 
     fun lookUp(at: Int) {
         scope.launch {
-            val result = withContext(Dispatchers.IO) { NativeCore.lookup(text, at) }
+            val result = withContext(Dispatchers.IO) { runCatching { NativeCore.lookup(text, at) }.getOrNull() } ?: return@launch
             lookup = result
             focused = 0
             view = PanelView.DICTIONARY
         }
+    }
+
+    // Opened from a bookmark: look its word up again and focus it.
+    LaunchedEffect(text, restore) {
+        val mark = restore?.takeIf { it.word.isNotEmpty() } ?: return@LaunchedEffect
+        val result = withContext(Dispatchers.IO) { runCatching { NativeCore.lookup(text, mark.wordStart) }.getOrNull() } ?: return@LaunchedEffect
+        lookup = result
+        focused = result.groups.indexOfFirst { it.term == mark.word }.coerceAtLeast(0)
+        view = PanelView.DICTIONARY
     }
 
     val current = lookup
@@ -168,6 +183,9 @@ fun BubblePanel(
                 }
             }
             TextButton(onClick = ::addCard, enabled = word != null || aiAnswer != null) { Text("+ Card", fontSize = 18.sp) }
+            TextButton(onClick = { onToggleBookmark(word?.term, if (word != null) current.start else 0) }) {
+                Text(if (bookmarked) "★ Marked" else "☆ Mark", fontSize = 18.sp)
+            }
             PinMenu(side, onSideChange)
         }
         HorizontalDivider(color = Color.LightGray)

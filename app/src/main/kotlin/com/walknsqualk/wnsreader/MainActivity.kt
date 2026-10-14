@@ -38,13 +38,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install()
         prefs = Prefs(this)
 
         // Open the installed dictionaries once, up front; the reader looks
         // words up through whatever is open.
         val dictionaryRoot = Paths.installedDictionaries(this).absolutePath
         val answerCache = Paths.answerCache(this).absolutePath
+        val appDatabase = Paths.appDatabase(this).absolutePath
         lifecycleScope.launch(Dispatchers.IO) {
+            // First: it's quick, and the reader asks it for bookmarks.
+            runCatching { NativeCore.openDatabase(appDatabase) }
             runCatching { NativeCore.openDictionaries(dictionaryRoot, prefs.frequencyOrder) }
             runCatching { NativeCore.openAnswerCache(answerCache) }
         }

@@ -9,13 +9,13 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.ichi2.anki.api.AddContentApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.IOException
 
 /**
  * AnkiDroid through its `AddContentApi`: the decks, note types and fields
@@ -182,12 +182,27 @@ object CardMaker {
                 body.isEmpty() || Network.md5Hex(body) == prefs.defaults.missingAudioMd5 -> CardAudio.Missing
                 else -> CardAudio.Found(body)
             }
-        } catch (e: IOException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Not only IOException: a URL OkHttp won't parse throws
+            // IllegalArgumentException. No clip is never worth a crash.
             CardAudio.Failed(e.message ?: e.javaClass.simpleName)
         }
     }
 
     suspend fun add(context: Context, prefs: Prefs, card: RenderedCard, image: ByteArray?, audio: CardAudio): AddOutcome =
+        try {
+            addNote(context, prefs, card, image, audio)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // AnkiDroid's provider can throw (a media file it won't take, a
+            // permission revoked mid-way); say so rather than crash.
+            AddOutcome.Failed("AnkiDroid refused the card: ${e.message ?: e.javaClass.simpleName}")
+        }
+
+    private suspend fun addNote(context: Context, prefs: Prefs, card: RenderedCard, image: ByteArray?, audio: CardAudio): AddOutcome =
         withContext(Dispatchers.IO) {
             val anki = AnkiDroid(context)
             if (!anki.installed()) return@withContext AddOutcome.Failed("AnkiDroid isn't installed.")

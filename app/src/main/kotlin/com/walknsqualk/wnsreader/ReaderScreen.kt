@@ -5,9 +5,11 @@ package com.walknsqualk.wnsreader
 
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -24,6 +26,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -55,6 +59,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -175,6 +180,25 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
     // The card being made, over everything else, and the note shown after.
     var card by remember { mutableStateOf<Pair<JSONObject, Block>?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var marks by remember { mutableStateOf<List<Bookmark>>(emptyList()) }
+    var showMarks by remember { mutableStateOf(false) }
+    // A bookmark on another page being jumped to: its bubble is selected
+    // once that page has loaded.
+    var jump by remember { mutableStateOf<Bookmark?>(null) }
+    // The bookmark the selected bubble was opened from, so the panel looks
+    // its word up again. Any other way of selecting a bubble clears it.
+    var restore by remember { mutableStateOf<Bookmark?>(null) }
+
+    fun select(block: Int?) {
+        selected = block
+        restore = null
+    }
+
+    suspend fun loadMarks(): List<Bookmark> = withContext(Dispatchers.IO) {
+        runCatching { NativeCore.bookmarks(path) }.getOrDefault(emptyList())
+    }
+
+    LaunchedEffect(path) { marks = loadMarks() }
 
     LaunchedEffect(notice) {
         if (notice != null) {
@@ -185,16 +209,44 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
 
     LaunchedEffect(index) {
         prefs.setLastPage(path, index)
-        selected = null
+        select(null)
         val loaded = loader.load(index)
         pageFailed = loaded == null
-        if (loaded != null) page = loaded
+        if (loaded != null) {
+            page = loaded
+            jump?.takeIf { it.page == index }?.let { mark ->
+                selected = mark.blockIn(loaded.text)
+                restore = mark
+            }
+        }
+        jump = null
         // The next page, so turning to it is instant.
         if (index < lastPage) launch { loader.load(index + 1) }
     }
 
     fun goTo(target: Int) {
         index = target.coerceIn(0, lastPage)
+    }
+
+    fun jumpTo(mark: Bookmark) {
+        showMarks = false
+        chrome = false
+        val current = page?.takeIf { it.index == index }
+        if (mark.page == index && current != null) {
+            selected = mark.blockIn(current.text)
+            restore = mark
+        } else {
+            jump = mark
+            goTo(mark.page)
+        }
+    }
+
+    fun deleteMark(mark: Bookmark) {
+        scope.launch {
+            val failure = withContext(Dispatchers.IO) { runCatching { NativeCore.deleteBookmark(mark.id) }.exceptionOrNull() }
+            if (failure != null) notice = "Couldn't delete the bookmark: ${failure.message}"
+            marks = loadMarks()
+        }
     }
 
     // Manga reads right to left: the left side of the screen is forward.
@@ -208,12 +260,15 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
 
     val shown = page?.takeIf { it.index == index }
     val bubble = selected?.let { shown?.text?.blocks?.getOrNull(it) }
+    val markHere = selected?.let { block -> shown?.let { p -> marks.firstOrNull { it.page == index && it.blockIn(p.text) == block } } }
+
+    BackHandler(enabled = showMarks) { showMarks = false }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // The panel lies over the page, pinned to whichever edge the user
         // picked (the right by default). The page keeps its size and zoom;
-        // it's panned so the selected bubble sits in the middle of what
-        // the panel leaves uncovered.
+        // it's panned so the selected bubble is in what the panel leaves
+        // uncovered (see PageView).
         // A share of the screen, but never so little the panel can't
         // hold its buttons, nor so much it hides the page.
         val panelWidth = (maxWidth * PANEL_SHARE).coerceAtLeast(minOf(PANEL_MIN_WIDTH, maxWidth * PANEL_MAX_SHARE))
@@ -245,9 +300,13 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                     } else {
                         scope.launch {
                             val hit = withContext(Dispatchers.IO) { NativeCore.bubbleAt(book.id, index, imageX, imageY) }
-                            // Off the bubbles, a tap turns the page as
-                            // usual, panel or not.
-                            if (hit != null) selected = hit else tapZone(xFraction)
+                            when {
+                                hit != null -> select(hit)
+                                // With the panel up, a tap off the bubbles
+                                // only closes it; the next one turns the page.
+                                selected != null -> select(null)
+                                else -> tapZone(xFraction)
+                            }
                         }
                     }
                 },
@@ -270,6 +329,8 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                     side = panelSide,
                     aiEnabled = prefs.aiEnabled,
                     aiLabel = prefs.provider().label,
+                    bookmarked = markHere != null,
+                    restore = restore,
                     askAi = { highlight, fresh ->
                         AiClient.ask(
                             context,
@@ -292,9 +353,31 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                     onAddCard = { request ->
                         card = CardMaker.noteInput(prefs, request, bubble.text, book.title, index + 1) to bubble
                     },
-                    onPrevious = { if (position > 0) selected = text.order[position - 1] },
-                    onNext = { if (position + 1 < text.order.size) selected = text.order[position + 1] },
-                    onClose = { selected = null },
+                    onToggleBookmark = { word, wordStart ->
+                        val existing = markHere
+                        val block = selected!!
+                        val pageIndex = index
+                        scope.launch {
+                            val failure = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    if (existing != null) {
+                                        NativeCore.deleteBookmark(existing.id)
+                                    } else {
+                                        NativeCore.saveBookmark(path, pageIndex, block, bubble.text, word.orEmpty(), wordStart)
+                                    }
+                                }.exceptionOrNull()
+                            }
+                            notice = when {
+                                failure != null -> "Couldn't save the bookmark: ${failure.message}"
+                                existing != null -> "Bookmark removed"
+                                else -> "Bookmarked"
+                            }
+                            marks = loadMarks()
+                        }
+                    },
+                    onPrevious = { if (position > 0) select(text.order[position - 1]) },
+                    onNext = { if (position + 1 < text.order.size) select(text.order[position + 1]) },
+                    onClose = { select(null) },
                     modifier = modifier,
                 )
             }
@@ -329,12 +412,23 @@ private fun Reader(book: BookInfo, path: String, prefs: Prefs, onBack: () -> Uni
                 index = index,
                 pageCount = book.pages.size,
                 showBoxes = showBoxes,
+                bookmarkCount = marks.size,
                 onBack = onBack,
+                onBookmarks = { showMarks = true },
                 onToggleBoxes = {
                     showBoxes = !showBoxes
                     prefs.showBubbleBoxes = showBoxes
                 },
                 onGoTo = ::goTo,
+            )
+        }
+
+        if (showMarks) {
+            BookmarkList(
+                marks = marks,
+                onJump = ::jumpTo,
+                onDelete = ::deleteMark,
+                onClose = { showMarks = false },
             )
         }
 
@@ -391,8 +485,10 @@ private val PANEL_MIN_HEIGHT = 320.dp
  *   coordinates along with how far across the view it was.
  *
  * [uncovered] is the part of the view the bubble panel leaves visible,
- * null when it's closed. While it's set, the selected bubble is panned
- * to its centre (zoom untouched), the pan limits loosen to allow that,
+ * null when it's closed. While it's set, the page is panned (zoom
+ * untouched) to bring the selected bubble into it: up or down to its
+ * middle, but sideways only as far as it takes to get the whole bubble
+ * in view, if it isn't already. The pan limits loosen to allow that,
  * and closing the panel puts the page back where it was.
  */
 @Composable
@@ -411,6 +507,8 @@ private fun PageView(
     val currentUncovered by rememberUpdatedState(uncovered)
     val density = LocalDensity.current
     val swipeThreshold = with(density) { 80.dp.toPx() }
+    // How far inside the uncovered area's sides a bubble is brought.
+    val bubbleMargin = with(density) { 16.dp.toPx() }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var zoom by remember(page.index) { mutableFloatStateOf(1f) }
     var pan by remember(page.index) { mutableStateOf(Offset.Zero) }
@@ -456,9 +554,21 @@ private fun PageView(
         if (viewSize == IntSize.Zero) return@LaunchedEffect
         if (focus != null && uncovered != null) {
             if (panBeforePanel == null) panBeforePanel = pan
-            val bubbleCentre = Offset((focus.x1 + focus.x2) / 2f / ocrPerImageX, (focus.y1 + focus.y2) / 2f / ocrPerImageY)
-            val onScreen = origin() + bubbleCentre * scale()
-            pan = clampPan(pan + (uncovered.center - onScreen))
+            val s = scale()
+            val o = origin()
+            val left = o.x + focus.x1 / ocrPerImageX * s
+            val right = o.x + focus.x2 / ocrPerImageX * s
+            val centreY = o.y + (focus.y1 + focus.y2) / 2f / ocrPerImageY * s
+            val minX = uncovered.left + bubbleMargin
+            val maxX = uncovered.right - bubbleMargin
+            val dx = when {
+                // Too wide to fit: centre it.
+                right - left > maxX - minX -> uncovered.center.x - (left + right) / 2f
+                left < minX -> minX - left
+                right > maxX -> maxX - right
+                else -> 0f
+            }
+            pan = clampPan(pan + Offset(dx, uncovered.center.y - centreY))
         } else if (uncovered == null) {
             panBeforePanel?.let { pan = clampPan(it) }
             panBeforePanel = null
@@ -536,14 +646,16 @@ private fun PageView(
     }
 }
 
-/** The bar shown over the page by a tap in the middle: title, page, jump. */
+/** The bar shown over the page by a tap in the middle: title, bookmarks, page, jump. */
 @Composable
 private fun ReaderChrome(
     title: String,
     index: Int,
     pageCount: Int,
     showBoxes: Boolean,
+    bookmarkCount: Int,
     onBack: () -> Unit,
+    onBookmarks: () -> Unit,
     onToggleBoxes: () -> Unit,
     onGoTo: (Int) -> Unit,
 ) {
@@ -558,6 +670,7 @@ private fun ReaderChrome(
         ) {
             TextButton(onClick = onBack) { Text("‹ Library", fontSize = 18.sp) }
             Text(title, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TextButton(onClick = onBookmarks) { Text(if (bookmarkCount > 0) "Bookmarks ($bookmarkCount)" else "Bookmarks", fontSize = 18.sp) }
             TextButton(onClick = onToggleBoxes) { Text(if (showBoxes) "Hide boxes" else "Show boxes", fontSize = 18.sp) }
         }
         if (pageCount > 1) {
@@ -576,6 +689,50 @@ private fun ReaderChrome(
                     valueRange = 0f..(pageCount - 1).toFloat(),
                     modifier = Modifier.weight(1f),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * The book's bookmarks, over the whole reader: page, word and bubble
+ * text. A tap jumps there and opens the bubble's panel.
+ */
+@Composable
+private fun BookmarkList(marks: List<Bookmark>, onJump: (Bookmark) -> Unit, onDelete: (Bookmark) -> Unit, onClose: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .pointerInput(Unit) { awaitEachGesture { do { val event = awaitPointerEvent() } while (event.changes.any { it.pressed }) } },
+    ) {
+        ScreenHeader("Bookmarks", onBack = onClose)
+        if (marks.isEmpty()) {
+            Text(
+                "No bookmarks yet. Open a bubble and tap ☆ Mark in its panel.",
+                modifier = Modifier.padding(24.dp),
+                fontSize = 18.sp,
+                color = Color.DarkGray,
+            )
+            return@Column
+        }
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(marks, key = { it.id }) { mark ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onJump(mark) }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("p. ${mark.page + 1}", modifier = Modifier.width(80.dp), fontSize = 18.sp)
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (mark.word.isNotEmpty()) Text(mark.word, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                        Text(mark.text, fontSize = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    TextButton(onClick = { onDelete(mark) }) { Text("Delete", fontSize = 16.sp) }
+                }
+                HorizontalDivider(color = Color.LightGray)
             }
         }
     }
